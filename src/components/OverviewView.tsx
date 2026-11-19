@@ -1,34 +1,39 @@
-import { ArrowUpRight, Copy, Check, Database, Film, Tv, Play, Server, KeyRound } from 'lucide-react';
+import { ArrowUpRight, Copy, Check, Database, Film, Tv, Play, Server, KeyRound, LogIn } from 'lucide-react';
 import { useState } from 'react';
-import type { DashboardStats, ImportJobRecord, MediaItemRecord } from '../types/media';
+import type { DashboardStats, ImportJobRecord, MediaItemRecord, UserProfile } from '../types/media';
 import { MediaPoster } from './MediaPoster';
 
 interface OverviewViewProps {
+  user: UserProfile | null;
   stats: DashboardStats;
   recentMedia: MediaItemRecord[];
   importJobs: ImportJobRecord[];
   activeApiKey: string;
   onNavigate: (tab: 'catalog' | 'ingest' | 'sandbox' | 'keys' | 'docs') => void;
   onSelectMediaForEmbed: (item: MediaItemRecord) => void;
+  onSignInGoogle: () => void;
 }
 
 export function OverviewView({
+  user,
   stats,
   recentMedia,
   importJobs,
   activeApiKey,
   onNavigate,
   onSelectMediaForEmbed,
+  onSignInGoogle,
 }: OverviewViewProps) {
   const [copiedUrl, setCopiedUrl] = useState(false);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://seu-dominio.com';
   const sampleItem = recentMedia[0];
+  const keyQuery = activeApiKey ? `?key=${activeApiKey}` : '';
   const sampleEmbedUrl = sampleItem
     ? sampleItem.type === 'tv'
-      ? `${origin}/embed/tv/${sampleItem.tmdbId}/1/1?key=${activeApiKey}`
-      : `${origin}/embed/movie/${sampleItem.tmdbId}?key=${activeApiKey}`
-    : `${origin}/embed/movie/157336?key=${activeApiKey}`;
+      ? `${origin}/embed/tv/${sampleItem.tmdbId}/1/1${keyQuery}`
+      : `${origin}/embed/movie/${sampleItem.tmdbId}${keyQuery}`
+    : `${origin}/embed/movie/157336${keyQuery}`;
 
   function handleCopySample() {
     navigator.clipboard?.writeText(sampleEmbedUrl);
@@ -38,27 +43,27 @@ export function OverviewView({
 
   const metricCards = [
     {
-      label: 'Filmes no Banco Próprio',
+      label: 'Filmes no Cloud Firestore',
       value: stats.totalMovies,
       detail: 'Indexados por TMDB ID',
       icon: Film,
     },
     {
-      label: 'Séries no Banco Próprio',
+      label: 'Séries no Cloud Firestore',
       value: stats.totalSeries,
-      detail: 'Temporadas e episódios locais',
+      detail: 'Temporadas e episódios na nuvem',
       icon: Tv,
     },
     {
       label: 'Links de Stream Extraídos',
       value: stats.totalSources,
-      detail: `${stats.workingSources} verificados ativos`,
+      detail: `${stats.totalImportJobs} extração(ões) registradas`,
       icon: Server,
     },
     {
       label: 'Requisições Embed / API',
       value: stats.totalEmbedRequests,
-      detail: `${stats.activeApiKeys} chaves ativas`,
+      detail: `${stats.activeApiKeys} chave(s) ativa(s)`,
       icon: KeyRound,
     },
   ];
@@ -70,20 +75,34 @@ export function OverviewView({
         <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-2xl space-y-2">
             <p className="text-xs font-medium tracking-wide text-blue-400">
-              Infraestrutura Própria de Stream & TMDB
+              Infraestrutura Própria no Firebase Cloud Firestore & TMDB
             </p>
             <h1 className="font-display text-2xl font-bold tracking-tight text-slate-50 lg:text-3xl">
-              Extraia listas M3U e APIs externas direto para seu banco próprio
+              Extraia listas M3U e APIs externas direto para seu banco Firebase
             </h1>
             <p className="text-sm leading-relaxed text-slate-400">
-              Indexe filmes e séries pelo TMDB ID, armazene todas as fontes HLS e MP4 localmente no banco SQLite e forneça URLs de embed e endpoints REST para seus clientes sem depender de terceiros.
+              Indexe filmes e séries pelo TMDB ID, persista todas as fontes HLS e MP4 diretamente no Cloud Firestore e forneça URLs de embed e endpoints REST em nuvem sem depender de provedores externos.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 shrink-0">
+            {!user && (
+              <button
+                type="button"
+                onClick={onSignInGoogle}
+                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 whitespace-nowrap shrink-0"
+              >
+                <LogIn className="h-4 w-4" aria-hidden="true" />
+                Entrar com Google
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onNavigate('ingest')}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 whitespace-nowrap shrink-0"
+              className={`inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                user
+                  ? 'bg-blue-600 text-white hover:bg-blue-500'
+                  : 'border border-slate-700 bg-slate-800/70 text-slate-200 hover:bg-slate-800'
+              }`}
             >
               <Database className="h-4 w-4" aria-hidden="true" />
               Extrair M3U ou API
@@ -157,7 +176,7 @@ export function OverviewView({
           <div className="flex items-center justify-between border-b border-slate-800 pb-4">
             <div>
               <h2 className="font-display text-base font-semibold text-slate-100">
-                Catálogo Recente no Banco Próprio
+                Catálogo Recente no Cloud Firestore
               </h2>
               <p className="text-xs text-slate-400">
                 Clique em qualquer título para abrir o player embed correspondente
@@ -173,8 +192,22 @@ export function OverviewView({
           </div>
 
           {recentMedia.length === 0 ? (
-            <div className="py-12 text-center text-sm text-slate-400">
-              Nenhum conteúdo no banco ainda. Use o Extrator para importar M3U ou API externa.
+            <div className="py-12 text-center space-y-3">
+              <p className="text-sm text-slate-400">
+                {user
+                  ? 'Nenhum conteúdo no catálogo ainda. Use o Extrator para importar M3U ou API externa.'
+                  : 'Conecte sua conta Google para inicializar o catálogo no Cloud Firestore e gerar sua API Key.'}
+              </p>
+              {!user && (
+                <button
+                  type="button"
+                  onClick={onSignInGoogle}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500"
+                >
+                  <LogIn className="h-3.5 w-3.5" aria-hidden="true" />
+                  Conectar com Google
+                </button>
+              )}
             </div>
           ) : (
             <div className="divide-y divide-slate-800/80">
@@ -199,7 +232,7 @@ export function OverviewView({
                         <span>{item.type === 'tv' ? 'Série' : 'Filme'}</span>
                         <span aria-hidden="true">·</span>
                         <span className="font-mono">TMDB {item.tmdbId}</span>
-                        {item.releaseYear && (
+                        {item.releaseYear > 0 && (
                           <>
                             <span aria-hidden="true">·</span>
                             <span>{item.releaseYear}</span>
@@ -246,7 +279,9 @@ export function OverviewView({
 
           {importJobs.length === 0 ? (
             <div className="py-12 text-center text-sm text-slate-400">
-              Nenhuma importação executada ainda.
+              {user
+                ? 'Nenhuma importação executada nesta conta ainda.'
+                : 'Entre com sua conta Google para acompanhar o histórico de extrações.'}
             </div>
           ) : (
             <div className="divide-y divide-slate-800/80">

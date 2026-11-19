@@ -4,70 +4,71 @@ export type MediaStatus = 'published' | 'draft';
 export type SourceOrigin = 'm3u' | 'external_api' | 'manual' | 'tmdb_import' | 'seed';
 
 export interface UserProfile {
-  id: number;
+  uid: string;
   name: string;
   email: string;
   role: 'admin' | 'developer';
-  plan: string;
+  plan: 'Developer' | 'Enterprise';
   createdAt: string;
 }
 
 export interface ApiKeyRecord {
-  id: number;
-  userId: number;
+  id: string;
+  ownerId: string;
   label: string;
   apiKey: string;
   allowedDomains: string;
   requestsCount: number;
   status: 'active' | 'revoked';
   createdAt: string;
-  lastUsedAt: string | null;
 }
 
 export interface MediaSourceRecord {
-  id: number;
-  mediaId: number;
-  season: number | null;
-  episode: number | null;
-  episodeTitle: string | null;
+  id: string;
+  mediaKey: string;
+  ownerId: string;
+  parentStatus: MediaStatus;
+  season: number;
+  episode: number;
+  episodeTitle: string;
   streamUrl: string;
   quality: string;
   format: StreamFormat;
   language: string;
   isWorking: boolean;
-  lastCheckedAt: string | null;
   originProvider: string;
   createdAt: string;
 }
 
 export interface MediaItemRecord {
-  id: number;
+  id: string;
+  ownerId: string;
   tmdbId: number;
-  imdbId: string | null;
+  imdbId: string;
   type: MediaType;
   title: string;
-  originalTitle: string | null;
+  originalTitle: string;
   overview: string;
   posterUrl: string;
   backdropUrl: string;
-  releaseYear: number | null;
-  rating: number | null;
+  releaseYear: number;
+  rating: number;
   genres: string[];
-  runtime: number | null;
+  runtime: number;
   status: MediaStatus;
   sourceOrigin: SourceOrigin;
-  sourcesCount?: number;
+  sourcesCount: number;
   sources?: MediaSourceRecord[];
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ImportJobRecord {
-  id: number;
-  userId: number | null;
+  id: string;
+  ownerId: string;
   sourceType: 'm3u_url' | 'm3u_text' | 'external_api' | 'xtream_codes';
   sourceName: string;
-  sourceUrl: string | null;
+  sourceUrl: string;
   totalFound: number;
   importedCount: number;
   skippedCount: number;
@@ -81,7 +82,6 @@ export interface DashboardStats {
   totalMovies: number;
   totalSeries: number;
   totalSources: number;
-  workingSources: number;
   totalEmbedRequests: number;
   totalImportJobs: number;
   activeApiKeys: number;

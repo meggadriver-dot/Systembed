@@ -1,0 +1,331 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() {
+      return request.resource.data;
+    }
+    function existing() {
+      return resource.data;
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'diogosandro07@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Entity Validators
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'plan', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'plan', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 180
+        && data.plan in ['Developer', 'Enterprise']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserSecret(data) {
+      return data.keys().hasAll(['ownerId', 'tmdbApiKey', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'tmdbApiKey', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && data.tmdbApiKey is string && data.tmdbApiKey.size() <= 200
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidApiKey(data, keyId) {
+      return data.keys().hasAll(['ownerId', 'label', 'apiKey', 'allowedDomains', 'requestsCount', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['ownerId', 'label', 'apiKey', 'allowedDomains', 'requestsCount', 'status', 'createdAt', 'updatedAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && data.label is string && data.label.size() >= 1 && data.label.size() <= 80
+        && data.apiKey is string && data.apiKey == keyId && data.apiKey.size() >= 10 && data.apiKey.size() <= 128
+        && data.allowedDomains is string && data.allowedDomains.size() >= 1 && data.allowedDomains.size() <= 300
+        && data.requestsCount is int && data.requestsCount >= 0
+        && data.status in ['active', 'revoked']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMediaItem(data) {
+      return data.keys().hasAll(['ownerId', 'tmdbId', 'type', 'title', 'status', 'sourceOrigin', 'sourcesCount', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'ownerId', 'tmdbId', 'imdbId', 'type', 'title', 'originalTitle',
+          'overview', 'posterUrl', 'backdropUrl', 'releaseYear', 'rating',
+          'genres', 'runtime', 'status', 'sourceOrigin', 'sourcesCount',
+          'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && data.tmdbId is int && data.tmdbId >= 1
+        && (!('imdbId' in data) || (data.imdbId is string && data.imdbId.size() <= 32))
+        && data.type in ['movie', 'tv']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && (!('originalTitle' in data) || (data.originalTitle is string && data.originalTitle.size() <= 200))
+        && (!('overview' in data) || (data.overview is string && data.overview.size() <= 2000))
+        && (!('posterUrl' in data) || (data.posterUrl is string && data.posterUrl.size() <= 500))
+        && (!('backdropUrl' in data) || (data.backdropUrl is string && data.backdropUrl.size() <= 500))
+        && (!('releaseYear' in data) || (data.releaseYear is int && data.releaseYear >= 0 && data.releaseYear <= 2100))
+        && (!('rating' in data) || (data.rating is number && data.rating >= 0 && data.rating <= 10))
+        && (!('genres' in data) || (data.genres is list && data.genres.size() <= 10 && (data.genres.size() == 0 || data.genres[0] is string)))
+        && (!('runtime' in data) || (data.runtime is int && data.runtime >= 0 && data.runtime <= 2000))
+        && data.status in ['published', 'draft']
+        && data.sourceOrigin in ['m3u', 'external_api', 'manual', 'tmdb_import', 'seed']
+        && data.sourcesCount is int && data.sourcesCount >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMediaSource(data, mediaKey) {
+      return data.keys().hasAll(['mediaKey', 'ownerId', 'parentStatus', 'season', 'episode', 'streamUrl', 'quality', 'format', 'language', 'isWorking', 'originProvider', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'mediaKey', 'ownerId', 'parentStatus', 'season', 'episode',
+          'episodeTitle', 'streamUrl', 'quality', 'format', 'language',
+          'isWorking', 'originProvider', 'createdAt', 'updatedAt'
+        ])
+        && data.mediaKey is string && data.mediaKey == mediaKey && isValidId(data.mediaKey)
+        && data.ownerId is string && isValidId(data.ownerId)
+        && data.parentStatus in ['published', 'draft']
+        && data.season is int && data.season >= 0 && data.season <= 200
+        && data.episode is int && data.episode >= 0 && data.episode <= 5000
+        && (!('episodeTitle' in data) || (data.episodeTitle is string && data.episodeTitle.size() <= 200))
+        && data.streamUrl is string && data.streamUrl.size() >= 1 && data.streamUrl.size() <= 1000
+        && data.quality is string && data.quality.size() >= 1 && data.quality.size() <= 20
+        && data.format in ['hls', 'mp4', 'ts', 'dash', 'embed']
+        && data.language is string && data.language.size() >= 1 && data.language.size() <= 20
+        && data.isWorking is bool
+        && data.originProvider is string && data.originProvider.size() >= 1 && data.originProvider.size() <= 100
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidImportJob(data) {
+      return data.keys().hasAll(['ownerId', 'sourceType', 'sourceName', 'totalFound', 'importedCount', 'skippedCount', 'failedCount', 'status', 'logs', 'createdAt'])
+        && data.keys().hasOnly(['ownerId', 'sourceType', 'sourceName', 'sourceUrl', 'totalFound', 'importedCount', 'skippedCount', 'failedCount', 'status', 'logs', 'createdAt'])
+        && data.ownerId is string && isValidId(data.ownerId)
+        && data.sourceType in ['m3u_url', 'm3u_text', 'external_api', 'xtream_codes']
+        && data.sourceName is string && data.sourceName.size() >= 1 && data.sourceName.size() <= 120
+        && (!('sourceUrl' in data) || (data.sourceUrl is string && data.sourceUrl.size() <= 600))
+        && data.totalFound is int && data.totalFound >= 0
+        && data.importedCount is int && data.importedCount >= 0
+        && data.skippedCount is int && data.skippedCount >= 0
+        && data.failedCount is int && data.failedCount >= 0
+        && data.status in ['completed', 'failed']
+        && data.logs is list && data.logs.size() <= 20 && (data.logs.size() == 0 || data.logs[0] is string)
+        && data.createdAt is timestamp;
+    }
+
+    function isValidPlatformSettings(data) {
+      return data.keys().hasAll(['defaultPlayerColor', 'allowPublicRegistration', 'requireApiKeyForEmbed', 'embedWatermarkText', 'tmdbConfigured', 'updatedAt'])
+        && data.keys().hasOnly(['defaultPlayerColor', 'allowPublicRegistration', 'requireApiKeyForEmbed', 'embedWatermarkText', 'tmdbConfigured', 'updatedAt'])
+        && data.defaultPlayerColor is string && data.defaultPlayerColor.size() == 7
+        && data.allowPublicRegistration is bool
+        && data.requireApiKeyForEmbed is bool
+        && data.embedWatermarkText is string && data.embedWatermarkText.size() >= 1 && data.embedWatermarkText.size() <= 40
+        && data.tmdbConfigured is bool
+        && data.updatedAt is timestamp;
+    }
+
+    // Connectivity health-check document
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Admins (never self-assigned)
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin() && isValidId(userId);
+    }
+
+    // Users (PII isolated to owner or admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isAdmin() || (
+          isOwner(userId)
+          && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'plan', 'updatedAt'])
+        ));
+      allow delete: if isAdmin() && isValidId(userId);
+
+      // Private user secrets (e.g., TMDB API Key)
+      match /secrets/{secretId} {
+        allow get: if isValidId(userId) && isValidId(secretId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+        allow create: if isVerifiedUser()
+          && isValidId(userId) && isValidId(secretId)
+          && isOwner(userId)
+          && isValidUserSecret(incoming())
+          && incoming().ownerId == request.auth.uid
+          && incoming().updatedAt == request.time;
+        allow update: if isVerifiedUser()
+          && isValidId(userId) && isValidId(secretId)
+          && isValidUserSecret(incoming())
+          && (isOwner(userId) || isAdmin())
+          && incoming().ownerId == existing().ownerId
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['tmdbApiKey', 'updatedAt']);
+        allow delete: if isVerifiedUser() && isValidId(userId) && isValidId(secretId) && (isOwner(userId) || isAdmin());
+      }
+    }
+
+    // Developer API Keys (capability-token get, owner-scoped list)
+    match /api_keys/{keyId} {
+      allow get: if isValidId(keyId);
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(keyId)
+        && isValidApiKey(incoming(), keyId)
+        && incoming().ownerId == request.auth.uid
+        && incoming().requestsCount == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(keyId)
+        && isValidApiKey(incoming(), keyId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().apiKey == existing().apiKey
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['label', 'allowedDomains', 'status', 'requestsCount', 'updatedAt']))
+          || (
+            existing().ownerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['label', 'allowedDomains', 'status', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(keyId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // Proprietary Media Catalog
+    match /media_items/{mediaKey} {
+      allow get: if isValidId(mediaKey) && (existing().status == 'published' || (isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin())));
+      allow list: if resource.data.status == 'published' || (isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin()));
+      allow create: if isVerifiedUser()
+        && isValidId(mediaKey)
+        && isValidMediaItem(incoming())
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(mediaKey)
+        && isValidMediaItem(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().tmdbId == existing().tmdbId
+        && incoming().type == existing().type
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            existing().ownerId == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'imdbId', 'title', 'originalTitle', 'overview', 'posterUrl', 'backdropUrl',
+              'releaseYear', 'rating', 'genres', 'runtime', 'status', 'sourcesCount', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(mediaKey) && (existing().ownerId == request.auth.uid || isAdmin());
+
+      // Subcollection: Media Sources (Master Gate via parent media_items)
+      match /sources/{sourceId} {
+        allow get: if isValidId(mediaKey) && isValidId(sourceId) && (
+          get(/databases/$(database)/documents/media_items/$(mediaKey)).data.status == 'published'
+          || (isSignedIn() && (get(/databases/$(database)/documents/media_items/$(mediaKey)).data.ownerId == request.auth.uid || isAdmin()))
+        );
+        allow list: if resource.data.parentStatus == 'published'
+          || (isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin()));
+        allow create: if isVerifiedUser()
+          && isValidId(mediaKey) && isValidId(sourceId)
+          && isValidMediaSource(incoming(), mediaKey)
+          && exists(/databases/$(database)/documents/media_items/$(mediaKey))
+          && (
+            get(/databases/$(database)/documents/media_items/$(mediaKey)).data.ownerId == request.auth.uid
+            || isAdmin()
+          )
+          && get(/databases/$(database)/documents/media_items/$(mediaKey)).data.status == incoming().parentStatus
+          && incoming().ownerId == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerifiedUser()
+          && isValidId(mediaKey) && isValidId(sourceId)
+          && isValidMediaSource(incoming(), mediaKey)
+          && exists(/databases/$(database)/documents/media_items/$(mediaKey))
+          && incoming().ownerId == existing().ownerId
+          && incoming().mediaKey == existing().mediaKey
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+              'season', 'episode', 'episodeTitle', 'streamUrl', 'quality',
+              'format', 'language', 'isWorking', 'originProvider', 'parentStatus', 'updatedAt'
+            ]))
+            || (
+              get(/databases/$(database)/documents/media_items/$(mediaKey)).data.ownerId == request.auth.uid
+              && existing().ownerId == request.auth.uid
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'season', 'episode', 'episodeTitle', 'streamUrl', 'quality',
+                'format', 'language', 'isWorking', 'originProvider', 'parentStatus', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if isVerifiedUser() && isValidId(mediaKey) && isValidId(sourceId) && (
+          isAdmin()
+          || get(/databases/$(database)/documents/media_items/$(mediaKey)).data.ownerId == request.auth.uid
+        );
+      }
+    }
+
+    // Import Jobs (Owner-scoped)
+    match /import_jobs/{jobId} {
+      allow get: if isValidId(jobId) && isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser()
+        && isValidId(jobId)
+        && isValidImportJob(incoming())
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update, delete: if isAdmin() && isValidId(jobId);
+    }
+
+    // Platform Settings
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
+        && isValidId(settingId)
+        && isValidPlatformSettings(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+  }
+}

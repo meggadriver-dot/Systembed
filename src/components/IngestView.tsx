@@ -1,17 +1,21 @@
 import { useMemo, useState } from 'react';
-import { FileCode2, Globe, Film, CheckCircle2, AlertCircle, Search } from 'lucide-react';
+import { FileCode2, Globe, Film, CheckCircle2, AlertCircle, Search, LogIn } from 'lucide-react';
 import { parseM3uPlaylist } from '../utils/m3uParser';
 import {
   DEFAULT_EXTERNAL_MAPPING,
   extractFromExternalPayload,
+  generateDeterministicTmdbFallback,
   type ExternalFieldMapping,
 } from '../utils/externalExtractor';
-import type { MediaType, TmdbSearchResult } from '../types/media';
+import { saveIngestedBatchToFirestore, type IngestEntryPayload } from '../services/firestoreCatalog';
+import type { MediaType, TmdbSearchResult, UserProfile } from '../types/media';
 
 interface IngestViewProps {
+  user: UserProfile | null;
+  tmdbApiKey: string;
   tmdbConfigured: boolean;
-  onIngestSuccess: () => void;
   onGoToCatalog: () => void;
+  onSignInGoogle: () => void;
 }
 
 function getSampleM3u() {
@@ -63,7 +67,13 @@ function getSampleJson() {
   );
 }
 
-export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: IngestViewProps) {
+export function IngestView({
+  user,
+  tmdbApiKey,
+  tmdbConfigured,
+  onGoToCatalog,
+  onSignInGoogle,
+}: IngestViewProps) {
   const [activeTab, setActiveTab] = useState<'m3u' | 'external' | 'manual'>('m3u');
 
   // M3U state
@@ -109,6 +119,8 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
     details: string[];
   } | null>(null);
 
+  const hasTmdbAccess = Boolean(tmdbApiKey || tmdbConfigured);
+
   const m3uPreview = useMemo(() => {
     if (m3uMode !== 'text' || !m3uText.trim()) return null;
     return parseM3uPlaylist(m3uText);
@@ -126,10 +138,19 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
 
   async function handleM3uSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!user) {
+      setFeedback({
+        type: 'error',
+        title: 'Autenticação necessária',
+        details: ['Faça login com sua conta Google antes de salvar conteúdos no Cloud Firestore.'],
+      });
+      return;
+    }
+
     setFeedback(null);
     setSubmitting(true);
     try {
-      const res = await fetch('/api/ingest/m3u', {
+      const res = await fetch('/api/proxy/parse-m3u', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -137,21 +158,40 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
           m3uContent: m3uMode === 'text' ? m3uText : undefined,
           sourceName: m3uSourceName,
           enrichWithTmdb: m3uEnrichTmdb,
+          tmdbApiKey,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setFeedback({ type: 'error', title: data.error || 'Erro ao extrair lista M3U.', details: [] });
+        setFeedback({ type: 'error', title: data.error || 'Erro ao analisar lista M3U.', details: [] });
         return;
       }
+
+      const saved = await saveIngestedBatchToFirestore(user.uid, data.entries as IngestEntryPayload[], {
+        sourceType: m3uMode === 'url' ? 'm3u_url' : 'm3u_text',
+        sourceName: m3uSourceName.trim() || 'Importação M3U',
+        sourceUrl: m3uMode === 'url' ? m3uUrl.trim() : '',
+        totalFound: Number(data.totalFound || 0),
+        failedCount: Number(data.failedCount || 0),
+        extraLogs: data.tmdbLookups
+          ? [`Enriquecimento TMDB executado para ${data.tmdbLookups} títulos.`]
+          : [],
+      });
+
       setFeedback({
         type: 'success',
-        title: `Extração concluída: ${data.importedCount} stream(s) salvos no banco próprio`,
-        details: data.logs || [],
+        title: `Extração salva no Cloud Firestore: ${saved.importedCount} stream(s) gravados`,
+        details: [
+          `Analisados ${data.totalFound} registros da lista M3U.`,
+          `${saved.importedCount} novo(s) stream(s) salvos, ${saved.skippedCount} duplicado(s) ignorados.`,
+        ],
       });
-      onIngestSuccess();
-    } catch {
-      setFeedback({ type: 'error', title: 'Falha de comunicação com o servidor.', details: [] });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        title: 'Falha ao salvar extração no Firebase.',
+        details: [err instanceof Error ? err.message : 'Erro desconhecido.'],
+      });
     } finally {
       setSubmitting(false);
     }
@@ -159,10 +199,19 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
 
   async function handleExternalSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!user) {
+      setFeedback({
+        type: 'error',
+        title: 'Autenticação necessária',
+        details: ['Faça login com sua conta Google antes de salvar conteúdos no Cloud Firestore.'],
+      });
+      return;
+    }
+
     setFeedback(null);
     setSubmitting(true);
     try {
-      const res = await fetch('/api/ingest/external-api', {
+      const res = await fetch('/api/proxy/parse-external', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -174,6 +223,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
           authHeaderName: extAuthHeaderName,
           authHeaderValue: extAuthHeaderValue,
           enrichWithTmdb: extEnrichTmdb,
+          tmdbApiKey,
         }),
       });
       const data = await res.json();
@@ -185,14 +235,32 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
         });
         return;
       }
+
+      const saved = await saveIngestedBatchToFirestore(user.uid, data.entries as IngestEntryPayload[], {
+        sourceType: 'external_api',
+        sourceName: extSourceName.trim() || 'Extração API Externa',
+        sourceUrl: extMode === 'url' ? extUrl.trim() : '',
+        totalFound: Number(data.totalFound || 0),
+        failedCount: Number(data.failedCount || 0),
+        extraLogs: data.tmdbLookups
+          ? [`Enriquecimento TMDB executado para ${data.tmdbLookups} títulos.`]
+          : [],
+      });
+
       setFeedback({
         type: 'success',
-        title: `Extração concluída: ${data.importedCount} stream(s) gravados no banco próprio`,
-        details: data.logs || [],
+        title: `Extração salva no Cloud Firestore: ${saved.importedCount} stream(s) gravados`,
+        details: [
+          `Extraídos ${data.totalFound} registros válidos da API externa.`,
+          `${saved.importedCount} gravados no Firestore; ${saved.skippedCount} duplicados ignorados.`,
+        ],
       });
-      onIngestSuccess();
-    } catch {
-      setFeedback({ type: 'error', title: 'Erro ao conectar com o servidor.', details: [] });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        title: 'Erro ao gravar extração externa no Firestore.',
+        details: [err instanceof Error ? err.message : 'Erro desconhecido.'],
+      });
     } finally {
       setSubmitting(false);
     }
@@ -205,7 +273,10 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
     setFeedback(null);
     try {
       const res = await fetch(
-        `/api/tmdb/search?q=${encodeURIComponent(tmdbQuery.trim())}&type=${tmdbSearchType}`
+        `/api/tmdb/search?q=${encodeURIComponent(tmdbQuery.trim())}&type=${tmdbSearchType}`,
+        {
+          headers: tmdbApiKey ? { 'x-tmdb-key': tmdbApiKey } : {},
+        }
       );
       const data = await res.json();
       if (!res.ok) {
@@ -238,39 +309,115 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
 
   async function handleManualSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!user) {
+      setFeedback({
+        type: 'error',
+        title: 'Autenticação necessária',
+        details: ['Faça login com sua conta Google antes de cadastrar títulos no Cloud Firestore.'],
+      });
+      return;
+    }
+
     setFeedback(null);
     setSubmitting(true);
     try {
-      const res = await fetch('/api/media', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tmdbId: manualTmdbId ? Number(manualTmdbId) : undefined,
-          type: manualType,
-          title: manualTitle.trim(),
-          releaseYear: manualYear ? Number(manualYear) : null,
-          overview: manualOverview.trim(),
-          posterUrl: manualPoster.trim(),
-          streamUrl: manualStreamUrl.trim(),
-          quality: manualQuality,
-          language: manualLanguage,
-          season: manualType === 'tv' ? Number(manualSeason) : null,
-          episode: manualType === 'tv' ? Number(manualEpisode) : null,
-          enrichFromTmdb: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setFeedback({ type: 'error', title: data.error || 'Erro ao cadastrar título.', details: [] });
+      const parsedYear = manualYear ? Number(manualYear) : null;
+      let tmdbIdNum = manualTmdbId ? Number(manualTmdbId) : 0;
+      let title = manualTitle.trim();
+      let overview = manualOverview.trim();
+      let posterUrl = manualPoster.trim();
+      let backdropUrl = posterUrl;
+      let releaseYear = parsedYear;
+      let rating: number | null = null;
+      let genres: string[] = [];
+      let imdbId = '';
+      let runtime: number | null = null;
+
+      if (!tmdbIdNum && title) {
+        tmdbIdNum = generateDeterministicTmdbFallback(title, parsedYear);
+      }
+
+      if (tmdbIdNum > 0 && tmdbApiKey && tmdbIdNum < 9000000) {
+        const detRes = await fetch(`/api/tmdb/details/${manualType}/${tmdbIdNum}`, {
+          headers: { 'x-tmdb-key': tmdbApiKey },
+        });
+        if (detRes.ok) {
+          const tmdb = await detRes.json();
+          title = title || String(tmdb.title || '');
+          overview = overview || String(tmdb.overview || '');
+          posterUrl = posterUrl || String(tmdb.posterUrl || '');
+          backdropUrl = backdropUrl || String(tmdb.backdropUrl || '');
+          releaseYear = releaseYear ?? (tmdb.releaseYear ?? null);
+          rating = tmdb.rating ?? null;
+          genres = Array.isArray(tmdb.genres) ? tmdb.genres : [];
+          imdbId = String(tmdb.imdbId || '');
+          runtime = tmdb.runtime ?? null;
+        }
+      }
+
+      if (!tmdbIdNum || !title) {
+        setFeedback({
+          type: 'error',
+          title: 'Dados incompletos',
+          details: ['Informe pelo menos o Título e o TMDB ID (ou selecione uma mídia da busca TMDB).'],
+        });
         return;
       }
+
+      const streamUrl = manualStreamUrl.trim();
+      if (!/^(https?:\/\/|\/demo\/).+/i.test(streamUrl)) {
+        setFeedback({
+          type: 'error',
+          title: 'URL de stream inválida',
+          details: ['Informe uma URL HTTP/HTTPS válida (.m3u8 ou .mp4).'],
+        });
+        return;
+      }
+
+      const entry: IngestEntryPayload = {
+        tmdbId: tmdbIdNum,
+        imdbId,
+        type: manualType,
+        title,
+        overview,
+        posterUrl,
+        backdropUrl: backdropUrl || posterUrl,
+        releaseYear,
+        rating,
+        genres,
+        runtime,
+        sourceOrigin: tmdbApiKey ? 'tmdb_import' : 'manual',
+        season: manualType === 'tv' ? Math.max(1, Number(manualSeason) || 1) : 0,
+        episode: manualType === 'tv' ? Math.max(1, Number(manualEpisode) || 1) : 0,
+        episodeTitle: manualType === 'tv' ? `Episódio ${manualEpisode || 1}` : '',
+        streamUrl,
+        quality: manualQuality,
+        format: streamUrl.toLowerCase().includes('.m3u8') ? 'hls' : 'mp4',
+        language: manualLanguage,
+        originProvider: 'Cadastro Manual + TMDB',
+      };
+
+      const saved = await saveIngestedBatchToFirestore(user.uid, [entry], {
+        sourceType: 'external_api',
+        sourceName: 'Cadastro Direto + TMDB',
+        totalFound: 1,
+        failedCount: 0,
+      });
+
       setManualStreamUrl('');
       setFeedback({
         type: 'success',
-        title: `"${data.item.title}" salvo no banco próprio (TMDB ${data.item.tmdbId})`,
-        details: ['O título já está disponível na sua API REST e nos endpoints /embed/.'],
+        title: `"${title}" salvo no Cloud Firestore (TMDB ${tmdbIdNum})`,
+        details: [
+          `${saved.importedCount} fonte adicionada. O título já está disponível na sua API REST e /embed/.`,
+        ],
       });
-      onIngestSuccess();
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        title: 'Erro ao salvar título no Firestore.',
+        details: [err instanceof Error ? err.message : 'Erro desconhecido.'],
+      });
     } finally {
       setSubmitting(false);
     }
@@ -278,6 +425,22 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
 
   return (
     <div className="space-y-6">
+      {!user && (
+        <div className="flex flex-col gap-3 rounded-xl border border-blue-900/60 bg-blue-950/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-xs text-blue-100">
+            <strong className="font-semibold">Conecte-se ao Firebase Auth:</strong> entre com sua conta Google para gravar listas M3U, APIs externas e títulos TMDB diretamente no seu banco Cloud Firestore.
+          </div>
+          <button
+            type="button"
+            onClick={onSignInGoogle}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-500 shrink-0"
+          >
+            <LogIn className="h-3.5 w-3.5" aria-hidden="true" />
+            Entrar com Google
+          </button>
+        </div>
+      )}
+
       {/* Mode Switcher */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-[#111827] p-2">
         <button
@@ -370,7 +533,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
                   Importar Playlist M3U / M3U8
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Extrai filmes, séries (S01E01 / T01E01), qualidades e idiomas direto para o banco próprio.
+                  Extrai filmes, séries (S01E01 / T01E01), qualidades e idiomas direto para o Cloud Firestore.
                 </p>
               </div>
               <button
@@ -427,7 +590,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
                     onChange={(e) => setM3uEnrichTmdb(e.target.checked)}
                     className="h-4 w-4 rounded border-slate-600 bg-slate-900 accent-blue-600"
                   />
-                  Enriquecer metadados via TMDB {tmdbConfigured ? '(Chave Ativa)' : '(Sem chave TMDB)'}
+                  Enriquecer metadados via TMDB {hasTmdbAccess ? '(Chave Ativa)' : '(Sem chave TMDB)'}
                 </label>
               </div>
             </div>
@@ -469,7 +632,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
               disabled={submitting}
               className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
             >
-              {submitting ? 'Extraindo para Banco Próprio...' : 'Extrair Lista M3U para Banco Próprio'}
+              {submitting ? 'Extraindo e Salvando no Firebase...' : 'Extrair Lista M3U para Cloud Firestore'}
             </button>
           </div>
 
@@ -479,7 +642,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
               Pré-visualização do Parser M3U
             </h3>
             <p className="mt-0.5 text-xs text-slate-400">
-              Análise instantânea antes de gravar no banco de dados
+              Análise instantânea antes de gravar no Cloud Firestore
             </p>
 
             {!m3uPreview ? (
@@ -546,7 +709,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
                   Extrair de API Externa ou Feed JSON
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Conecte qualquer API JSON de terceiros, mapeie os campos e importe tudo para seu banco próprio.
+                  Conecte qualquer API JSON de terceiros, mapeie os campos e importe tudo para o Cloud Firestore.
                 </p>
               </div>
               <button
@@ -688,7 +851,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
               disabled={submitting}
               className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
             >
-              {submitting ? 'Extraindo e Salvando...' : 'Extrair da API Externa para Banco Próprio'}
+              {submitting ? 'Extraindo e Salvando no Firebase...' : 'Extrair da API Externa para Cloud Firestore'}
             </button>
           </div>
 
@@ -833,7 +996,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
             <div className="max-h-96 overflow-y-auto divide-y divide-slate-800 rounded-lg border border-slate-800 bg-[#0B0F17]">
               {tmdbResults.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-500">
-                  {tmdbConfigured
+                  {hasTmdbAccess
                     ? 'Digite um título acima para buscar metadados oficiais no TMDB.'
                     : 'Você pode preencher o formulário ao lado diretamente com o TMDB ID ou configurar sua chave TMDB em Chaves API & Conta.'}
                 </div>
@@ -915,7 +1078,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
               <input
                 id="manual-title"
                 type="text"
-                required={!manualTmdbId || !tmdbConfigured}
+                required={!manualTmdbId || !hasTmdbAccess}
                 value={manualTitle}
                 onChange={(e) => setManualTitle(e.target.value)}
                 placeholder="Ex: Clube da Luta"
@@ -929,7 +1092,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
               </label>
               <input
                 id="manual-stream-url"
-                type="url"
+                type="text"
                 required
                 value={manualStreamUrl}
                 onChange={(e) => setManualStreamUrl(e.target.value)}
@@ -1019,7 +1182,7 @@ export function IngestView({ tmdbConfigured, onIngestSuccess, onGoToCatalog }: I
               disabled={submitting}
               className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
             >
-              {submitting ? 'Salvando...' : 'Salvar no Banco Próprio'}
+              {submitting ? 'Salvando no Cloud Firestore...' : 'Salvar no Cloud Firestore'}
             </button>
           </form>
         </div>

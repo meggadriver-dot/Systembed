@@ -1,0 +1,156 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Developer or admin account profile stored in Firestore",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 180 },
+        "plan": { "type": "string", "enum": ["Developer", "Enterprise"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "plan", "createdAt", "updatedAt"]
+    },
+    "UserTmdbSecret": {
+      "title": "UserTmdbSecret",
+      "description": "Private user TMDB API key isolated from public reads",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tmdbApiKey": { "type": "string", "minLength": 0, "maxLength": 200 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "tmdbApiKey", "updatedAt"]
+    },
+    "ApiKeyRecord": {
+      "title": "ApiKeyRecord",
+      "description": "API key for embed player and REST API access",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "apiKey": { "type": "string", "minLength": 10, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "allowedDomains": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "requestsCount": { "type": "integer" },
+        "status": { "type": "string", "enum": ["active", "revoked"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "label", "apiKey", "allowedDomains", "requestsCount", "status", "createdAt", "updatedAt"]
+    },
+    "MediaItem": {
+      "title": "MediaItem",
+      "description": "Movie or TV series indexed by TMDB ID in proprietary catalog",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tmdbId": { "type": "integer" },
+        "imdbId": { "type": "string", "minLength": 0, "maxLength": 32 },
+        "type": { "type": "string", "enum": ["movie", "tv"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "originalTitle": { "type": "string", "minLength": 0, "maxLength": 200 },
+        "overview": { "type": "string", "minLength": 0, "maxLength": 2000 },
+        "posterUrl": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "backdropUrl": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "releaseYear": { "type": "integer" },
+        "rating": { "type": "number" },
+        "genres": { "type": "array" },
+        "runtime": { "type": "integer" },
+        "status": { "type": "string", "enum": ["published", "draft"] },
+        "sourceOrigin": { "type": "string", "enum": ["m3u", "external_api", "manual", "tmdb_import", "seed"] },
+        "sourcesCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "tmdbId", "type", "title", "status", "sourceOrigin", "sourcesCount", "createdAt", "updatedAt"]
+    },
+    "MediaSource": {
+      "title": "MediaSource",
+      "description": "Direct HLS/MP4 stream source attached to a media item",
+      "type": "object",
+      "properties": {
+        "mediaKey": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "parentStatus": { "type": "string", "enum": ["published", "draft"] },
+        "season": { "type": "integer" },
+        "episode": { "type": "integer" },
+        "episodeTitle": { "type": "string", "minLength": 0, "maxLength": 200 },
+        "streamUrl": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "quality": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "format": { "type": "string", "enum": ["hls", "mp4", "ts", "dash", "embed"] },
+        "language": { "type": "string", "minLength": 1, "maxLength": 20 },
+        "isWorking": { "type": "boolean" },
+        "originProvider": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["mediaKey", "ownerId", "parentStatus", "season", "episode", "streamUrl", "quality", "format", "language", "isWorking", "originProvider", "createdAt", "updatedAt"]
+    },
+    "ImportJob": {
+      "title": "ImportJob",
+      "description": "Extraction log from M3U playlists or external JSON APIs",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sourceType": { "type": "string", "enum": ["m3u_url", "m3u_text", "external_api", "xtream_codes"] },
+        "sourceName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "sourceUrl": { "type": "string", "minLength": 0, "maxLength": 600 },
+        "totalFound": { "type": "integer" },
+        "importedCount": { "type": "integer" },
+        "skippedCount": { "type": "integer" },
+        "failedCount": { "type": "integer" },
+        "status": { "type": "string", "enum": ["completed", "failed"] },
+        "logs": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerId", "sourceType", "sourceName", "totalFound", "importedCount", "skippedCount", "failedCount", "status", "logs", "createdAt"]
+    },
+    "PlatformSettings": {
+      "title": "PlatformSettings",
+      "description": "Public-safe platform player configuration",
+      "type": "object",
+      "properties": {
+        "defaultPlayerColor": { "type": "string", "minLength": 7, "maxLength": 7 },
+        "allowPublicRegistration": { "type": "boolean" },
+        "requireApiKeyForEmbed": { "type": "boolean" },
+        "embedWatermarkText": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "tmdbConfigured": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["defaultPlayerColor", "allowPublicRegistration", "requireApiKeyForEmbed", "embedWatermarkText", "tmdbConfigured", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-isolated user profile documents"
+    },
+    "/users/{userId}/secrets/{secretId}": {
+      "schema": { "$ref": "#/entities/UserTmdbSecret" },
+      "description": "Private API secrets belonging to a user"
+    },
+    "/api_keys/{keyId}": {
+      "schema": { "$ref": "#/entities/ApiKeyRecord" },
+      "description": "Developer API keys for embed player and REST API access"
+    },
+    "/media_items/{mediaKey}": {
+      "schema": { "$ref": "#/entities/MediaItem" },
+      "description": "Proprietary catalog of movies and TV series indexed by TMDB ID"
+    },
+    "/media_items/{mediaKey}/sources/{sourceId}": {
+      "schema": { "$ref": "#/entities/MediaSource" },
+      "description": "Stream sources (HLS, MP4) attached to each media item"
+    },
+    "/import_jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/ImportJob" },
+      "description": "History of M3U and external API extraction jobs"
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PlatformSettings" },
+      "description": "Platform-wide player and registration configuration"
+    }
+  }
+}

@@ -12,6 +12,7 @@ export function ApiDocsView({ activeApiKey }: ApiDocsViewProps) {
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : 'https://seu-dominio.com';
+  const displayKey = activeApiKey || 'SUA_CHAVE_API_FIRESTORE';
 
   const endpoints = [
     {
@@ -33,18 +34,31 @@ export function ApiDocsView({ activeApiKey }: ApiDocsViewProps) {
       path: '/api/v1/catalog',
       title: 'Listar Catálogo Próprio (JSON)',
       description:
-        'Retorna filmes e séries armazenados no banco próprio com paginação (?page=1&limit=25&type=movie|tv). Requer header x-api-key.',
+        'Retorna filmes e séries armazenados no Firebase Cloud Firestore com paginação (?page=1&limit=25&type=movie|tv). Requer header x-api-key.',
     },
     {
       method: 'GET',
       path: '/api/v1/media/{type}/{tmdb_id}',
       title: 'Consultar Fontes & Episódios por TMDB ID',
       description:
-        'Retorna metadados completos e todas as URLs de stream (HLS, MP4) vinculadas ao TMDB ID informado.',
+        'Retorna metadados completos e todas as URLs de stream (HLS, MP4) vinculadas ao TMDB ID informado no Firestore.',
     },
   ];
 
   async function runLiveTest() {
+    if (!activeApiKey) {
+      setResponseJson(
+        JSON.stringify(
+          {
+            error: 'Nenhuma API Key ativa detectada na sessão.',
+            action: 'Entre com sua conta Google na aba "Chaves API & Conta" para gerar sua chave automaticamente.',
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
     setTesting(true);
     try {
       const res = await fetch(testEndpoint, {
@@ -67,7 +81,7 @@ export function ApiDocsView({ activeApiKey }: ApiDocsViewProps) {
             Documentação da API Própria (REST & Embed)
           </h2>
           <p className="mt-1 text-xs text-slate-400">
-            Todos os endpoints leem exclusivamente do seu banco SQLite local — zero dependência de servidores externos após a extração.
+            Todos os endpoints leem exclusivamente do seu banco Firebase Cloud Firestore — zero dependência de servidores externos após a extração.
           </p>
         </div>
 
@@ -85,7 +99,7 @@ export function ApiDocsView({ activeApiKey }: ApiDocsViewProps) {
               <button
                 type="button"
                 onClick={() => {
-                  navigator.clipboard?.writeText(`${origin}${ep.path.replace('{api_key}', activeApiKey)}`);
+                  navigator.clipboard?.writeText(`${origin}${ep.path.replace('{api_key}', displayKey)}`);
                   setCopiedPath(ep.path);
                   setTimeout(() => setCopiedPath(null), 1600);
                 }}
@@ -111,7 +125,14 @@ export function ApiDocsView({ activeApiKey }: ApiDocsViewProps) {
               Testar Endpoint REST ao Vivo
             </h3>
             <p className="text-xs text-slate-400">
-              Executa uma chamada real autenticada com sua chave <code className="text-blue-400">{activeApiKey}</code>.
+              {activeApiKey ? (
+                <>
+                  Executa uma chamada real autenticada com sua chave{' '}
+                  <code className="text-blue-400">{activeApiKey}</code>.
+                </>
+              ) : (
+                'Entre com sua conta Google na aba Chaves API & Conta para gerar sua chave e testar os endpoints REST.'
+              )}
             </p>
           </div>
         </div>

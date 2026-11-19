@@ -19,13 +19,14 @@ export function SandboxView({
   initialEpisode = 1,
 }: SandboxViewProps) {
   const defaultItem = initialMedia || catalog[0] || null;
+  const activeKeyDefault = apiKeys.find((k) => k.status === 'active')?.apiKey || '';
 
-  const [selectedMediaId, setSelectedMediaId] = useState<string>(defaultItem ? String(defaultItem.id) : '');
+  const [selectedMediaId, setSelectedMediaId] = useState<string>(defaultItem ? defaultItem.id : '');
   const [mediaType, setMediaType] = useState<MediaType>(defaultItem?.type || 'movie');
   const [tmdbId, setTmdbId] = useState<string>(defaultItem ? String(defaultItem.tmdbId) : '157336');
   const [season, setSeason] = useState<string>(String(initialSeason));
   const [episode, setEpisode] = useState<string>(String(initialEpisode));
-  const [selectedKey, setSelectedKey] = useState<string>(apiKeys[0]?.apiKey || 'cv_live_demo_9f8a2c4e1b7d3a6f');
+  const [selectedKey, setSelectedKey] = useState<string>(activeKeyDefault);
   const [playerColor, setPlayerColor] = useState<string>('#2563EB');
   const [codeTab, setCodeTab] = useState<'iframe' | 'react' | 'curl'>('iframe');
   const [copiedBlock, setCopiedBlock] = useState<string | null>(null);
@@ -33,7 +34,7 @@ export function SandboxView({
 
   useEffect(() => {
     if (initialMedia) {
-      setSelectedMediaId(String(initialMedia.id));
+      setSelectedMediaId(initialMedia.id);
       setMediaType(initialMedia.type);
       setTmdbId(String(initialMedia.tmdbId));
       setSeason(String(initialSeason));
@@ -41,7 +42,23 @@ export function SandboxView({
     }
   }, [initialMedia, initialSeason, initialEpisode]);
 
+  useEffect(() => {
+    if (!selectedMediaId && !initialMedia && catalog.length > 0) {
+      setSelectedMediaId(catalog[0].id);
+      setMediaType(catalog[0].type);
+      setTmdbId(String(catalog[0].tmdbId));
+    }
+  }, [catalog, selectedMediaId, initialMedia]);
+
+  useEffect(() => {
+    if (!selectedKey && apiKeys.length > 0) {
+      const firstActive = apiKeys.find((k) => k.status === 'active') || apiKeys[0];
+      if (firstActive) setSelectedKey(firstActive.apiKey);
+    }
+  }, [apiKeys, selectedKey]);
+
   const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  const effectiveKey = selectedKey || 'SUA_API_KEY_FIRESTORE';
 
   const snippets = useMemo(() => {
     const parsedTmdb = Number.parseInt(tmdbId, 10) || 157336;
@@ -51,10 +68,10 @@ export function SandboxView({
       tmdbId: parsedTmdb,
       season: Number.parseInt(season, 10) || 1,
       episode: Number.parseInt(episode, 10) || 1,
-      apiKey: selectedKey,
+      apiKey: effectiveKey,
       color: playerColor,
     });
-  }, [origin, mediaType, tmdbId, season, episode, selectedKey, playerColor]);
+  }, [origin, mediaType, tmdbId, season, episode, effectiveKey, playerColor]);
 
   const relativeEmbedSrc = useMemo(() => {
     const parsedTmdb = Number.parseInt(tmdbId, 10) || 157336;
@@ -71,7 +88,7 @@ export function SandboxView({
 
   function handleSelectCatalogItem(idStr: string) {
     setSelectedMediaId(idStr);
-    const found = catalog.find((c) => String(c.id) === idStr);
+    const found = catalog.find((c) => c.id === idStr);
     if (found) {
       setMediaType(found.type);
       setTmdbId(String(found.tmdbId));
@@ -103,7 +120,7 @@ export function SandboxView({
               Gerador de Embed & Sandbox
             </h2>
             <p className="text-xs text-slate-400">
-              Configure os parâmetros para testar o player real e copiar o código para seu site ou app.
+              Configure os parâmetros para testar o player direto do Cloud Firestore e copiar o código para seu site ou app.
             </p>
           </div>
 
@@ -202,7 +219,7 @@ export function SandboxView({
                 </option>
               ))}
               {apiKeys.length === 0 && (
-                <option value="cv_live_demo_9f8a2c4e1b7d3a6f">Chave Demo Padrão</option>
+                <option value="">Sem chave conectada (modo público)</option>
               )}
             </select>
           </div>

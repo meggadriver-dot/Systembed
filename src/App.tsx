@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LayoutDashboard,
   Film,
@@ -10,6 +10,17 @@ import {
   X,
   UserCheck,
 } from 'lucide-react';
+import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
+import { auth, googleProvider } from './firebase';
+import {
+  ensureUserProfileAndKeys,
+  loadPlatformSettings,
+  loadUserTmdbSecret,
+  seedInitialCatalogIfEmpty,
+  subscribePublishedCatalog,
+  subscribeUserApiKeys,
+  subscribeUserImportJobs,
+} from './services/firestoreCatalog';
 import type {
   ApiKeyRecord,
   DashboardStats,
@@ -41,19 +52,14 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [tmdbApiKey, setTmdbApiKey] = useState('');
+
   const [apiKeys, setApiKeys] = useState<ApiKeyRecord[]>([]);
   const [catalog, setCatalog] = useState<MediaItemRecord[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [importJobs, setImportJobs] = useState<ImportJobRecord[]>([]);
-  const [stats, setStats] = useState<DashboardStats>({
-    totalMovies: 0,
-    totalSeries: 0,
-    totalSources: 0,
-    workingSources: 0,
-    totalEmbedRequests: 0,
-    totalImportJobs: 0,
-    activeApiKeys: 0,
-  });
   const [settings, setSettings] = useState<PlatformSettings>({
     tmdbConfigured: false,
     tmdbKeyPreview: '',
@@ -69,75 +75,99 @@ export default function App() {
     episode: number;
   }>({ media: null, season: 1, episode: 1 });
 
-  const getAuthHeaders = useCallback((): HeadersInit => {
-    const token = localStorage.getItem('cv_token');
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }, []);
-
-  const fetchUser = useCallback(async () => {
-    const res = await fetch('/api/auth/me', { headers: getAuthHeaders() });
-    if (res.ok) {
-      const data = await res.json();
-      setUser(data.user || null);
-    }
-  }, [getAuthHeaders]);
-
-  const fetchApiKeys = useCallback(async () => {
-    const res = await fetch('/api/keys', { headers: getAuthHeaders() });
-    if (res.ok) {
-      const data = await res.json();
-      setApiKeys(data.keys || []);
-    }
-  }, [getAuthHeaders]);
-
-  const fetchCatalog = useCallback(async () => {
-    setCatalogLoading(true);
+  const refreshSettings = useCallback(async () => {
     try {
-      const res = await fetch('/api/media');
-      if (res.ok) {
-        const data = await res.json();
-        setCatalog(data.items || []);
-      }
-    } finally {
-      setCatalogLoading(false);
+      const s = await loadPlatformSettings();
+      setSettings(s);
+    } catch {
+      // keep defaults if settings/platform not initialized yet
     }
   }, []);
 
-  const fetchStatsAndJobs = useCallback(async () => {
-    const [statsRes, jobsRes] = await Promise.all([fetch('/api/stats'), fetch('/api/import-jobs')]);
-    if (statsRes.ok) {
-      setStats(await statsRes.json());
-    }
-    if (jobsRes.ok) {
-      const j = await jobsRes.json();
-      setImportJobs(j.jobs || []);
-    }
-  }, []);
-
-  const fetchSettings = useCallback(async () => {
-    const res = await fetch('/api/settings');
-    if (res.ok) {
-      setSettings(await res.json());
-    }
-  }, []);
-
-  const refreshAll = useCallback(async () => {
-    await Promise.all([fetchUser(), fetchApiKeys(), fetchCatalog(), fetchStatsAndJobs(), fetchSettings()]);
-  }, [fetchUser, fetchApiKeys, fetchCatalog, fetchStatsAndJobs, fetchSettings]);
-
+  // Subscribe to public published catalog + settings on mount
   useEffect(() => {
-    refreshAll();
-  }, [refreshAll]);
+    refreshSettings();
+    const unsubCatalog = subscribePublishedCatalog(
+      (items) => {
+        setCatalog(items);
+        setCatalogLoading(false);
+      },
+      () => {
+        setCatalogLoading(false);
+      }
+    );
+    return () => unsubCatalog();
+  }, [refreshSettings]);
 
-  function handleAuthChange(token: string | null) {
-    if (token) {
-      localStorage.setItem('cv_token', token);
-    } else {
-      localStorage.removeItem('cv_token');
+  // Listen to Firebase Auth state & wire user-scoped Firestore subscriptions
+  useEffect(() => {
+    let unsubKeys: (() => void) | null = null;
+    let unsubJobs: (() => void) | null = null;
+
+    const unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
+      if (unsubKeys) {
+        unsubKeys();
+        unsubKeys = null;
+      }
+      if (unsubJobs) {
+        unsubJobs();
+        unsubJobs = null;
+      }
+
+      if (!fbUser) {
+        setUser(null);
+        setApiKeys([]);
+        setImportJobs([]);
+        setTmdbApiKey('');
+        return;
+      }
+
+      try {
+        const profile = await ensureUserProfileAndKeys(fbUser);
+        setUser(profile);
+        await seedInitialCatalogIfEmpty(fbUser.uid);
+        const secret = await loadUserTmdbSecret(fbUser.uid);
+        setTmdbApiKey(secret);
+        unsubKeys = subscribeUserApiKeys(fbUser.uid, setApiKeys);
+        unsubJobs = subscribeUserImportJobs(fbUser.uid, setImportJobs);
+      } catch (err) {
+        setAuthError(err instanceof Error ? err.message : 'Erro ao inicializar sessão Firebase.');
+      }
+    });
+
+    return () => {
+      unsubAuth();
+      if (unsubKeys) unsubKeys();
+      if (unsubJobs) unsubJobs();
+    };
+  }, []);
+
+  const stats: DashboardStats = useMemo(
+    () => ({
+      totalMovies: catalog.filter((c) => c.type === 'movie').length,
+      totalSeries: catalog.filter((c) => c.type === 'tv').length,
+      totalSources: catalog.reduce((acc, c) => acc + (c.sourcesCount || 0), 0),
+      totalEmbedRequests: apiKeys.reduce((acc, k) => acc + (k.requestsCount || 0), 0),
+      totalImportJobs: importJobs.length,
+      activeApiKeys: apiKeys.filter((k) => k.status === 'active').length,
+    }),
+    [catalog, apiKeys, importJobs]
+  );
+
+  async function handleSignInGoogle() {
+    setAuthError('');
+    setAuthBusy(true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : 'Falha ao autenticar com Google.');
+    } finally {
+      setAuthBusy(false);
     }
-    fetchUser();
-    fetchApiKeys();
-    fetchStatsAndJobs();
+  }
+
+  async function handleSignOut() {
+    await signOut(auth);
   }
 
   function handleSelectMediaForEmbed(item: MediaItemRecord, season = 1, episode = 1) {
@@ -145,7 +175,7 @@ export default function App() {
     setActiveTab('sandbox');
   }
 
-  const activeApiKey = apiKeys.find((k) => k.status === 'active')?.apiKey || 'cv_live_demo_9f8a2c4e1b7d3a6f';
+  const activeApiKey = apiKeys.find((k) => k.status === 'active')?.apiKey || '';
   const currentNavLabel = NAV_ITEMS.find((n) => n.id === activeTab)?.label || 'Visão Geral';
 
   return (
@@ -183,10 +213,10 @@ export default function App() {
         <div className="border-t border-slate-800/90 p-4">
           <div className="rounded-lg border border-slate-800 bg-[#111827] p-3 text-xs space-y-1">
             <div className="font-medium text-slate-200">
-              {user ? user.name : 'Modo Visitante / Demo'}
+              {user ? user.name : 'Visitante (Firebase Cloud)'}
             </div>
             <div className="text-slate-400 truncate">
-              {user ? user.email : 'Cadastre-se para gerar chaves'}
+              {user ? user.email : 'Entre com Google para gerenciar API'}
             </div>
           </div>
         </div>
@@ -236,7 +266,6 @@ export default function App() {
 
       {/* Main Content Area */}
       <div className="flex-1 lg:pl-64 flex flex-col min-w-0">
-        {/* Top Bar Contract: Breadcrumb — Clean space — Single Primary Action */}
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-slate-800/90 bg-[#0B0F17]/95 backdrop-blur-sm px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3 min-w-0">
             <button
@@ -261,7 +290,7 @@ export default function App() {
               className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-500 whitespace-nowrap shrink-0"
             >
               <UserCheck className="h-3.5 w-3.5" aria-hidden="true" />
-              {user ? 'Minha Conta & Chaves' : 'Cadastrar / Pegar API'}
+              {user ? 'Minha Conta & Chaves' : 'Entrar / Pegar API'}
             </button>
           </div>
         </header>
@@ -269,36 +298,35 @@ export default function App() {
         <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 max-w-[1440px] w-full mx-auto">
           {activeTab === 'overview' && (
             <OverviewView
+              user={user}
               stats={stats}
               recentMedia={catalog}
               importJobs={importJobs}
               activeApiKey={activeApiKey}
               onNavigate={(tab) => setActiveTab(tab)}
               onSelectMediaForEmbed={handleSelectMediaForEmbed}
+              onSignInGoogle={handleSignInGoogle}
             />
           )}
 
           {activeTab === 'catalog' && (
             <CatalogView
+              user={user}
               items={catalog}
               loading={catalogLoading}
-              onRefresh={() => {
-                fetchCatalog();
-                fetchStatsAndJobs();
-              }}
               onSelectForEmbed={handleSelectMediaForEmbed}
               onNavigateIngest={() => setActiveTab('ingest')}
+              onSignInGoogle={handleSignInGoogle}
             />
           )}
 
           {activeTab === 'ingest' && (
             <IngestView
-              tmdbConfigured={settings.tmdbConfigured}
-              onIngestSuccess={() => {
-                fetchCatalog();
-                fetchStatsAndJobs();
-              }}
+              user={user}
+              tmdbApiKey={tmdbApiKey}
+              tmdbConfigured={Boolean(tmdbApiKey || settings.tmdbConfigured)}
               onGoToCatalog={() => setActiveTab('catalog')}
+              onSignInGoogle={handleSignInGoogle}
             />
           )}
 
@@ -317,12 +345,13 @@ export default function App() {
               user={user}
               apiKeys={apiKeys}
               settings={settings}
-              onAuthChange={handleAuthChange}
-              onRefreshKeys={() => {
-                fetchApiKeys();
-                fetchStatsAndJobs();
-              }}
-              onRefreshSettings={fetchSettings}
+              tmdbApiKey={tmdbApiKey}
+              authBusy={authBusy}
+              authError={authError}
+              onSignInGoogle={handleSignInGoogle}
+              onSignOut={handleSignOut}
+              onTmdbKeyUpdated={(newKey) => setTmdbApiKey(newKey)}
+              onRefreshSettings={refreshSettings}
             />
           )}
 

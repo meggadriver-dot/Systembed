@@ -1,13 +1,24 @@
-import { useState } from 'react';
-import { KeyRound, Copy, Check, Trash2, Plus, LogOut, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { KeyRound, Copy, Check, Trash2, Plus, LogOut, ShieldCheck, LogIn } from 'lucide-react';
 import type { ApiKeyRecord, PlatformSettings, UserProfile } from '../types/media';
+import {
+  createUserApiKey,
+  deleteUserApiKey,
+  savePlatformSettings,
+  saveUserTmdbSecret,
+  toggleUserApiKeyStatus,
+} from '../services/firestoreCatalog';
 
 interface ApiKeysViewProps {
   user: UserProfile | null;
   apiKeys: ApiKeyRecord[];
   settings: PlatformSettings;
-  onAuthChange: (token: string | null) => void;
-  onRefreshKeys: () => void;
+  tmdbApiKey: string;
+  authBusy: boolean;
+  authError: string;
+  onSignInGoogle: () => void;
+  onSignOut: () => void;
+  onTmdbKeyUpdated: (newKey: string) => void;
   onRefreshSettings: () => void;
 }
 
@@ -15,89 +26,43 @@ export function ApiKeysView({
   user,
   apiKeys,
   settings,
-  onAuthChange,
-  onRefreshKeys,
+  tmdbApiKey,
+  authBusy,
+  authError,
+  onSignInGoogle,
+  onSignOut,
+  onTmdbKeyUpdated,
   onRefreshSettings,
 }: ApiKeysViewProps) {
-  const [authMode, setAuthMode] = useState<'register' | 'login'>('register');
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [authBusy, setAuthBusy] = useState(false);
-
   // Create API Key state
   const [keyLabel, setKeyLabel] = useState('');
   const [allowedDomains, setAllowedDomains] = useState('*');
   const [creatingKey, setCreatingKey] = useState(false);
   const [keyError, setKeyError] = useState('');
-  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Settings form state
+  // Personal TMDB Secret state
   const [tmdbKeyInput, setTmdbKeyInput] = useState('');
+  const [savingTmdb, setSavingTmdb] = useState(false);
+  const [tmdbSavedMsg, setTmdbSavedMsg] = useState('');
+
+  // Global Platform Settings state (admin only)
   const [playerColor, setPlayerColor] = useState(settings.defaultPlayerColor || '#2563EB');
   const [watermarkText, setWatermarkText] = useState(settings.embedWatermarkText || 'CineVault Player');
   const [requireKeyEmbed, setRequireKeyEmbed] = useState(settings.requireApiKeyForEmbed);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSavedMsg, setSettingsSavedMsg] = useState('');
+  const [settingsError, setSettingsError] = useState('');
 
-  async function handleAuthSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setAuthError('');
-    setAuthBusy(true);
-    try {
-      const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
-      const payload = authMode === 'register' ? { name, email, password } : { email, password };
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setAuthError(data.error || 'Erro ao autenticar.');
-        return;
-      }
-      onAuthChange(data.token);
-      setName('');
-      setEmail('');
-      setPassword('');
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  async function handleDemoLogin() {
-    setAuthError('');
-    setAuthBusy(true);
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'admin@cinevault.dev', password: 'admin123' }),
-      });
-      const data = await res.json();
-      if (res.ok && data.token) {
-        onAuthChange(data.token);
-      } else {
-        setAuthError(data.error || 'Falha no login demo.');
-      }
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  async function handleLogout() {
-    const token = localStorage.getItem('cv_token');
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    onAuthChange(null);
-  }
+  useEffect(() => {
+    setPlayerColor(settings.defaultPlayerColor || '#2563EB');
+    setWatermarkText(settings.embedWatermarkText || 'CineVault Player');
+    setRequireKeyEmbed(Boolean(settings.requireApiKeyForEmbed));
+  }, [settings]);
 
   async function handleCreateKey(e: React.FormEvent) {
     e.preventDefault();
+    if (!user) return;
     setKeyError('');
     if (!keyLabel.trim()) {
       setKeyError('Informe um nome para sua chave de API.');
@@ -105,74 +70,79 @@ export function ApiKeysView({
     }
     setCreatingKey(true);
     try {
-      const token = localStorage.getItem('cv_token');
-      const res = await fetch('/api/keys', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ label: keyLabel.trim(), allowedDomains: allowedDomains.trim() || '*' }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setKeyError(data.error || 'Não foi possível criar a chave.');
-        return;
-      }
+      await createUserApiKey(user.uid, keyLabel.trim(), allowedDomains.trim() || '*');
       setKeyLabel('');
-      onRefreshKeys();
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : 'Não foi possível criar a chave no Firestore.');
     } finally {
       setCreatingKey(false);
     }
   }
 
   async function handleToggleKeyStatus(key: ApiKeyRecord) {
-    const token = localStorage.getItem('cv_token');
-    const nextStatus = key.status === 'active' ? 'revoked' : 'active';
-    await fetch(`/api/keys/${key.id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ status: nextStatus }),
-    });
-    onRefreshKeys();
+    try {
+      await toggleUserApiKeyStatus(key);
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : 'Erro ao atualizar status da chave.');
+    }
   }
 
-  async function handleDeleteKey(id: number) {
-    const token = localStorage.getItem('cv_token');
-    await fetch(`/api/keys/${id}`, {
-      method: 'DELETE',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    onRefreshKeys();
+  async function handleDeleteKey(id: string) {
+    try {
+      await deleteUserApiKey(id);
+    } catch (err) {
+      setKeyError(err instanceof Error ? err.message : 'Erro ao remover chave.');
+    }
+  }
+
+  async function handleSaveTmdbKey(e: React.FormEvent) {
+    e.preventDefault();
+    if (!user) return;
+    setSavingTmdb(true);
+    setTmdbSavedMsg('');
+    try {
+      const cleaned = tmdbKeyInput.trim();
+      await saveUserTmdbSecret(user.uid, cleaned);
+      onTmdbKeyUpdated(cleaned);
+      setTmdbKeyInput('');
+      setTmdbSavedMsg(
+        cleaned
+          ? 'Chave TMDB v3 salva com segurança na sua coleção privada do Firestore.'
+          : 'Chave TMDB removida.'
+      );
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : 'Falha ao salvar chave TMDB.');
+    } finally {
+      setSavingTmdb(false);
+    }
   }
 
   async function handleSaveSettings(e: React.FormEvent) {
     e.preventDefault();
+    if (!user || user.role !== 'admin') return;
     setSavingSettings(true);
     setSettingsSavedMsg('');
+    setSettingsError('');
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...(tmdbKeyInput.trim() ? { tmdbApiKey: tmdbKeyInput.trim() } : {}),
-          defaultPlayerColor: playerColor,
-          embedWatermarkText: watermarkText,
-          requireApiKeyForEmbed: requireKeyEmbed,
-        }),
+      await savePlatformSettings({
+        defaultPlayerColor: playerColor,
+        allowPublicRegistration: true,
+        requireApiKeyForEmbed: requireKeyEmbed,
+        embedWatermarkText: watermarkText,
+        tmdbConfigured: Boolean(tmdbApiKey || settings.tmdbConfigured),
       });
-      if (res.ok) {
-        setTmdbKeyInput('');
-        setSettingsSavedMsg('Configurações salvas com sucesso.');
-        onRefreshSettings();
-      }
+      setSettingsSavedMsg('Configurações globais salvas no Firestore (/settings/platform).');
+      onRefreshSettings();
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : 'Erro ao salvar configurações globais.');
     } finally {
       setSavingSettings(false);
     }
   }
+
+  const maskedTmdb = tmdbApiKey
+    ? `${tmdbApiKey.slice(0, 4)}••••${tmdbApiKey.slice(-4)}`
+    : '';
 
   return (
     <div className="space-y-6">
@@ -180,43 +150,14 @@ export function ApiKeysView({
         {/* Account / Auth Column */}
         <section className="lg:col-span-5 space-y-5 rounded-xl border border-slate-800 bg-[#111827] p-6">
           {!user ? (
-            <>
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="font-display text-base font-semibold text-slate-100">
-                    {authMode === 'register' ? 'Criar Conta de Desenvolvedor' : 'Entrar no Portal'}
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Cadastre-se para gerar suas chaves exclusivas da API Embed e REST.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1 rounded-lg bg-[#0B0F17] p-1 border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode('register');
-                    setAuthError('');
-                  }}
-                  className={`flex-1 rounded-md py-1.5 text-xs font-medium ${
-                    authMode === 'register' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-100'
-                  }`}
-                >
-                  Cadastrar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode('login');
-                    setAuthError('');
-                  }}
-                  className={`flex-1 rounded-md py-1.5 text-xs font-medium ${
-                    authMode === 'login' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-100'
-                  }`}
-                >
-                  Já tenho conta
-                </button>
+            <div className="space-y-4">
+              <div>
+                <h2 className="font-display text-base font-semibold text-slate-100">
+                  Entrar com Google (Firebase Auth)
+                </h2>
+                <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                  Autentique-se com sua conta Google para provisionar automaticamente suas chaves da API Embed e REST no Cloud Firestore.
+                </p>
               </div>
 
               {authError && (
@@ -225,89 +166,37 @@ export function ApiKeysView({
                 </div>
               )}
 
-              <form onSubmit={handleAuthSubmit} className="space-y-3">
-                {authMode === 'register' && (
-                  <div>
-                    <label htmlFor="auth-name" className="block text-xs font-medium text-slate-400 mb-1">
-                      Nome Completo ou Projeto
-                    </label>
-                    <input
-                      id="auth-name"
-                      type="text"
-                      required
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Ex: João Silva / CineApp"
-                      className="w-full rounded-lg border border-slate-700 bg-[#0B0F17] px-3 py-2 text-sm text-slate-100"
-                    />
-                  </div>
-                )}
-                <div>
-                  <label htmlFor="auth-email" className="block text-xs font-medium text-slate-400 mb-1">
-                    E-mail
-                  </label>
-                  <input
-                    id="auth-email"
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="dev@seudominio.com"
-                    className="w-full rounded-lg border border-slate-700 bg-[#0B0F17] px-3 py-2 text-sm text-slate-100"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="auth-password" className="block text-xs font-medium text-slate-400 mb-1">
-                    Senha (mín. 6 caracteres)
-                  </label>
-                  <input
-                    id="auth-password"
-                    type="password"
-                    required
-                    minLength={6}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full rounded-lg border border-slate-700 bg-[#0B0F17] px-3 py-2 text-sm text-slate-100"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={authBusy}
-                  className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
-                >
-                  {authBusy
-                    ? 'Processando...'
-                    : authMode === 'register'
-                      ? 'Cadastrar e Gerar Chave API'
-                      : 'Entrar na Conta'}
-                </button>
-              </form>
+              <button
+                type="button"
+                onClick={onSignInGoogle}
+                disabled={authBusy}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+              >
+                <LogIn className="h-4 w-4" aria-hidden="true" />
+                {authBusy ? 'Conectando ao Google...' : 'Continuar com Google'}
+              </button>
 
-              <div className="border-t border-slate-800 pt-4">
-                <button
-                  type="button"
-                  onClick={handleDemoLogin}
-                  disabled={authBusy}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-4 py-2 text-xs font-medium text-slate-200 hover:bg-slate-700"
-                >
-                  Entrar com Conta Admin Demo (admin@cinevault.dev)
-                </button>
+              <div className="rounded-lg border border-slate-800 bg-[#0B0F17] p-3.5 text-xs text-slate-400 space-y-1">
+                <div className="font-medium text-slate-200">Provisionamento Automático</div>
+                <p>
+                  Ao entrar, sua conta recebe uma chave <code className="text-blue-400">cv_live_...</code> vinculada ao seu UID no Firebase para integrar em qualquer site ou aplicativo.
+                </p>
               </div>
-            </>
+            </div>
           ) : (
             <div className="space-y-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
                   <div className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400">
                     <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                    Sessão Ativa · Plano {user.plan}
+                    Sessão Firebase · {user.role === 'admin' ? 'Administrador' : `Plano ${user.plan}`}
                   </div>
                   <h2 className="font-display text-lg font-bold text-slate-100">{user.name}</h2>
                   <div className="text-xs text-slate-400">{user.email}</div>
                 </div>
                 <button
                   type="button"
-                  onClick={handleLogout}
+                  onClick={onSignOut}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-700"
                 >
                   <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
@@ -356,20 +245,20 @@ export function ApiKeysView({
                   className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50"
                 >
                   <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                  {creatingKey ? 'Gerando...' : 'Gerar Nova Chave Embed'}
+                  {creatingKey ? 'Gerando no Firestore...' : 'Gerar Nova Chave Embed'}
                 </button>
               </form>
             </div>
           )}
         </section>
 
-        {/* API Keys Table Column */}
+        {/* API Keys Table + Settings Column */}
         <section className="lg:col-span-7 space-y-6">
           <div className="rounded-xl border border-slate-800 bg-[#111827] p-6">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
               <div>
                 <h2 className="font-display text-base font-semibold text-slate-100">
-                  {user ? 'Suas Chaves de API Embed & REST' : 'Chaves de Demonstração Disponíveis'}
+                  Suas Chaves de API Embed & REST
                 </h2>
                 <p className="text-xs text-slate-400">
                   Use no parâmetro ?key= do iframe ou no header x-api-key das chamadas REST.
@@ -378,9 +267,13 @@ export function ApiKeysView({
               <KeyRound className="h-5 w-5 text-slate-500" aria-hidden="true" />
             </div>
 
-            {apiKeys.length === 0 ? (
+            {!user ? (
               <div className="py-10 text-center text-xs text-slate-400">
-                Nenhuma chave criada nesta conta ainda.
+                Conecte sua conta Google ao lado para visualizar e gerenciar suas chaves exclusivas no Cloud Firestore.
+              </div>
+            ) : apiKeys.length === 0 ? (
+              <div className="py-10 text-center text-xs text-slate-400">
+                Provisionando chave inicial na sua conta...
               </div>
             ) : (
               <div className="divide-y divide-slate-800">
@@ -417,25 +310,21 @@ export function ApiKeysView({
                         )}
                         {copiedId === k.id ? 'Copiada' : 'Copiar'}
                       </button>
-                      {user && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => handleToggleKeyStatus(k)}
-                            className="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-slate-700"
-                          >
-                            {k.status === 'active' ? 'Revogar' : 'Reativar'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteKey(k.id)}
-                            aria-label={`Excluir chave ${k.label}`}
-                            className="rounded-md border border-slate-700 p-1.5 text-slate-400 hover:border-red-800 hover:text-red-400"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleToggleKeyStatus(k)}
+                        className="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-slate-700"
+                      >
+                        {k.status === 'active' ? 'Revogar' : 'Reativar'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteKey(k.id)}
+                        aria-label={`Excluir chave ${k.label}`}
+                        className="rounded-md border border-slate-700 p-1.5 text-slate-400 hover:border-red-800 hover:text-red-400"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -443,14 +332,57 @@ export function ApiKeysView({
             )}
           </div>
 
-          {/* TMDB & Player Global Settings */}
+          {/* Personal TMDB v3 Key (Owner-Isolated) */}
+          <form onSubmit={handleSaveTmdbKey} className="rounded-xl border border-slate-800 bg-[#111827] p-6 space-y-4">
+            <div className="border-b border-slate-800 pb-3">
+              <h2 className="font-display text-base font-semibold text-slate-100">
+                Sua Chave TMDB API (v3)
+              </h2>
+              <p className="text-xs text-slate-400">
+                Salva de forma privada apenas para sua conta em <code className="text-slate-300">/users/uid/secrets/tmdb</code> para enriquecer filmes e séries durante extrações.
+              </p>
+            </div>
+
+            {tmdbSavedMsg && (
+              <div className="rounded-lg border border-emerald-800/70 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300">
+                {tmdbSavedMsg}
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="settings-tmdb-key" className="block text-xs font-medium text-slate-400 mb-1">
+                TMDB API Key (v3){' '}
+                {maskedTmdb && <span className="font-mono text-emerald-400">({maskedTmdb})</span>}
+              </label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  id="settings-tmdb-key"
+                  type="password"
+                  value={tmdbKeyInput}
+                  onChange={(e) => setTmdbKeyInput(e.target.value)}
+                  placeholder={maskedTmdb ? 'Cole uma nova chave para substituir' : 'Cole sua TMDB API Key v3'}
+                  disabled={!user}
+                  className="flex-1 rounded-lg border border-slate-700 bg-[#0B0F17] px-3 py-2 text-xs font-mono text-slate-100 disabled:opacity-50"
+                />
+                <button
+                  type="submit"
+                  disabled={!user || savingTmdb}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50 shrink-0"
+                >
+                  {savingTmdb ? 'Salvando...' : 'Salvar Chave TMDB'}
+                </button>
+              </div>
+            </div>
+          </form>
+
+          {/* Global Platform Settings (Admin Only) */}
           <form onSubmit={handleSaveSettings} className="rounded-xl border border-slate-800 bg-[#111827] p-6 space-y-4">
             <div className="border-b border-slate-800 pb-3">
               <h2 className="font-display text-base font-semibold text-slate-100">
-                Integração TMDB & Configurações do Player
+                Configurações Globais do Player Embed
               </h2>
               <p className="text-xs text-slate-400">
-                Conecte sua chave v3 do TheMovieDB para buscar e enriquecer filmes e séries automaticamente durante extrações.
+                Parâmetros padrão aplicados em todos os endpoints <code className="text-slate-300">/embed/</code>. Apenas administradores podem alterar.
               </p>
             </div>
 
@@ -459,24 +391,13 @@ export function ApiKeysView({
                 {settingsSavedMsg}
               </div>
             )}
+            {settingsError && (
+              <div className="rounded-lg border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+                {settingsError}
+              </div>
+            )}
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div>
-                <label htmlFor="settings-tmdb-key" className="block text-xs font-medium text-slate-400 mb-1">
-                  TMDB API Key (v3){' '}
-                  {settings.tmdbConfigured && (
-                    <span className="font-mono text-emerald-400">({settings.tmdbKeyPreview})</span>
-                  )}
-                </label>
-                <input
-                  id="settings-tmdb-key"
-                  type="password"
-                  value={tmdbKeyInput}
-                  onChange={(e) => setTmdbKeyInput(e.target.value)}
-                  placeholder={settings.tmdbConfigured ? 'Deixe vazio para manter atual' : 'Cole sua TMDB API Key v3'}
-                  className="w-full rounded-lg border border-slate-700 bg-[#0B0F17] px-3 py-2 text-xs font-mono text-slate-100"
-                />
-              </div>
               <div>
                 <label htmlFor="settings-watermark" className="block text-xs font-medium text-slate-400 mb-1">
                   Marca d&apos;água do Player
@@ -486,43 +407,49 @@ export function ApiKeysView({
                   type="text"
                   value={watermarkText}
                   onChange={(e) => setWatermarkText(e.target.value)}
-                  className="w-full rounded-lg border border-slate-700 bg-[#0B0F17] px-3 py-2 text-xs text-slate-100"
+                  disabled={user?.role !== 'admin'}
+                  className="w-full rounded-lg border border-slate-700 bg-[#0B0F17] px-3 py-2 text-xs text-slate-100 disabled:opacity-60"
                 />
               </div>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={requireKeyEmbed}
-                  onChange={(e) => setRequireKeyEmbed(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-600 bg-slate-900 accent-blue-600"
-                />
-                Exigir parâmetro ?key= válido para abrir qualquer /embed/
-              </label>
-
-              <div className="flex items-center gap-2">
+              <div className="flex items-end gap-3 pb-1">
                 <label htmlFor="settings-color" className="text-xs text-slate-400">
-                  Cor padrão:
+                  Cor padrão do player:
                 </label>
                 <input
                   id="settings-color"
                   type="color"
                   value={playerColor}
                   onChange={(e) => setPlayerColor(e.target.value)}
-                  className="h-8 w-10 cursor-pointer rounded border border-slate-700 bg-[#0B0F17] p-0.5"
+                  disabled={user?.role !== 'admin'}
+                  className="h-8 w-10 cursor-pointer rounded border border-slate-700 bg-[#0B0F17] p-0.5 disabled:opacity-60"
                 />
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={savingSettings}
-              className="rounded-lg bg-slate-800 border border-slate-700 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
-            >
-              {savingSettings ? 'Salvando...' : 'Salvar Configurações'}
-            </button>
+            <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={requireKeyEmbed}
+                onChange={(e) => setRequireKeyEmbed(e.target.checked)}
+                disabled={user?.role !== 'admin'}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-900 accent-blue-600"
+              />
+              Exigir parâmetro ?key= válido para abrir qualquer /embed/
+            </label>
+
+            {user?.role === 'admin' ? (
+              <button
+                type="submit"
+                disabled={savingSettings}
+                className="rounded-lg bg-slate-800 border border-slate-700 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                {savingSettings ? 'Salvando...' : 'Salvar Configurações Globais'}
+              </button>
+            ) : (
+              <div className="text-[11px] text-slate-500">
+                Visualização somente leitura para contas Developer padrão.
+              </div>
+            )}
           </form>
         </section>
       </div>
