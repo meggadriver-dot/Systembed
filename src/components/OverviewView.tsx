@@ -43,21 +43,21 @@ export function OverviewView({
 
   const metricCards = [
     {
-      label: 'Filmes no Cloud Firestore',
+      label: 'Filmes Disponíveis',
       value: stats.totalMovies,
-      detail: 'Indexados por TMDB ID',
+      detail: 'Firestore + API EmbedMaster',
       icon: Film,
     },
     {
-      label: 'Séries no Cloud Firestore',
+      label: 'Séries Disponíveis',
       value: stats.totalSeries,
-      detail: 'Temporadas e episódios na nuvem',
+      detail: 'Temporadas e episódios integrados',
       icon: Tv,
     },
     {
-      label: 'Links de Stream Extraídos',
+      label: 'Fontes / Streams Prontos',
       value: stats.totalSources,
-      detail: `${stats.totalImportJobs} extração(ões) registradas`,
+      detail: `${stats.totalImportJobs} extração(ões) no Firebase`,
       icon: Server,
     },
     {
@@ -75,13 +75,13 @@ export function OverviewView({
         <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-2xl space-y-2">
             <p className="text-xs font-medium tracking-wide text-blue-400">
-              Infraestrutura Própria no Firebase Cloud Firestore & TMDB
+              Infraestrutura Própria no Firebase Cloud Firestore & API EmbedMaster
             </p>
             <h1 className="font-display text-2xl font-bold tracking-tight text-slate-50 lg:text-3xl">
-              Extraia listas M3U e APIs externas direto para seu banco Firebase
+              Catálogo completo pronto para Embed e sincronização no Firebase
             </h1>
             <p className="text-sm leading-relaxed text-slate-400">
-              Indexe filmes e séries pelo TMDB ID, persista todas as fontes HLS e MP4 diretamente no Cloud Firestore e forneça URLs de embed e endpoints REST em nuvem sem depender de provedores externos.
+              Navegue imediatamente por filmes e séries da fonte principal EmbedMaster, teste players por TMDB ID e persista títulos e fontes diretamente no Cloud Firestore.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3 shrink-0">
@@ -97,7 +97,7 @@ export function OverviewView({
             )}
             <button
               type="button"
-              onClick={() => onNavigate('ingest')}
+              onClick={() => onNavigate('catalog')}
               className={`inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 user
                   ? 'bg-blue-600 text-white hover:bg-blue-500'
@@ -105,7 +105,7 @@ export function OverviewView({
               }`}
             >
               <Database className="h-4 w-4" aria-hidden="true" />
-              Extrair M3U ou API
+              Abrir Catálogo Próprio
             </button>
             <button
               type="button"
@@ -176,7 +176,7 @@ export function OverviewView({
           <div className="flex items-center justify-between border-b border-slate-800 pb-4">
             <div>
               <h2 className="font-display text-base font-semibold text-slate-100">
-                Catálogo Recente no Cloud Firestore
+                Catálogo Integrado (Firebase + EmbedMaster)
               </h2>
               <p className="text-xs text-slate-400">
                 Clique em qualquer título para abrir o player embed correspondente

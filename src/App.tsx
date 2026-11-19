@@ -36,6 +36,8 @@ import { SandboxView } from './components/SandboxView';
 import { ApiKeysView } from './components/ApiKeysView';
 import { ApiDocsView } from './components/ApiDocsView';
 
+import { mergeCatalogSources } from './utils/catalogMerge';
+
 type TabId = 'overview' | 'catalog' | 'ingest' | 'sandbox' | 'keys' | 'docs';
 
 const NAV_ITEMS: Array<{ id: TabId; label: string; icon: typeof LayoutDashboard }> = [
@@ -57,8 +59,14 @@ export default function App() {
   const [tmdbApiKey, setTmdbApiKey] = useState('');
 
   const [apiKeys, setApiKeys] = useState<ApiKeyRecord[]>([]);
-  const [catalog, setCatalog] = useState<MediaItemRecord[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [firestoreCatalog, setFirestoreCatalog] = useState<MediaItemRecord[]>([]);
+  const [apiCatalog, setApiCatalog] = useState<MediaItemRecord[]>([]);
+  const [firestoreLoading, setFirestoreLoading] = useState(true);
+  const [apiLoading, setApiLoading] = useState(true);
+  const [apiLoadingMore, setApiLoadingMore] = useState(false);
+  const [apiPage, setApiPage] = useState(1);
+  const [apiHasMore, setApiHasMore] = useState(true);
+
   const [importJobs, setImportJobs] = useState<ImportJobRecord[]>([]);
   const [settings, setSettings] = useState<PlatformSettings>({
     tmdbConfigured: false,
@@ -84,20 +92,53 @@ export default function App() {
     }
   }, []);
 
-  // Subscribe to public published catalog + settings on mount
+  // Load initial EmbedMaster API catalog page automatically on mount
+  const fetchApiCatalogPage = useCallback(
+    async (pageNum: number, append: boolean) => {
+      if (append) {
+        setApiLoadingMore(true);
+      } else {
+        setApiLoading(true);
+      }
+      try {
+        const headers: Record<string, string> = {};
+        if (tmdbApiKey) headers['x-tmdb-key'] = tmdbApiKey;
+        const res = await fetch(`/api/catalog/embedmaster?page=${pageNum}&type=all`, { headers });
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          page?: number;
+          hasMorePages?: boolean;
+          items?: MediaItemRecord[];
+        };
+        const incoming = Array.isArray(data.items) ? data.items : [];
+        setApiCatalog((prev) => (append ? mergeCatalogSources(prev, incoming) : incoming));
+        setApiPage(data.page || pageNum);
+        setApiHasMore(Boolean(data.hasMorePages && incoming.length > 0));
+      } catch {
+        // non-fatal: Firestore items still remain available
+      } finally {
+        setApiLoading(false);
+        setApiLoadingMore(false);
+      }
+    },
+    [tmdbApiKey]
+  );
+
+  // Subscribe to public published Firestore catalog + settings + EmbedMaster live API on mount
   useEffect(() => {
     refreshSettings();
+    fetchApiCatalogPage(1, false);
     const unsubCatalog = subscribePublishedCatalog(
       (items) => {
-        setCatalog(items);
-        setCatalogLoading(false);
+        setFirestoreCatalog(items);
+        setFirestoreLoading(false);
       },
       () => {
-        setCatalogLoading(false);
+        setFirestoreLoading(false);
       }
     );
     return () => unsubCatalog();
-  }, [refreshSettings]);
+  }, [refreshSettings, fetchApiCatalogPage]);
 
   // Listen to Firebase Auth state & wire user-scoped Firestore subscriptions
   useEffect(() => {
@@ -141,6 +182,18 @@ export default function App() {
       if (unsubJobs) unsubJobs();
     };
   }, []);
+
+  const catalog = useMemo(
+    () => mergeCatalogSources(firestoreCatalog, apiCatalog),
+    [firestoreCatalog, apiCatalog]
+  );
+
+  const firestoreIds = useMemo(
+    () => new Set(firestoreCatalog.map((item) => item.id)),
+    [firestoreCatalog]
+  );
+
+  const catalogLoading = firestoreLoading && apiLoading && catalog.length === 0;
 
   const stats: DashboardStats = useMemo(
     () => ({
@@ -313,7 +366,14 @@ export default function App() {
             <CatalogView
               user={user}
               items={catalog}
+              firestoreIds={firestoreIds}
+              firestoreCount={firestoreCatalog.length}
+              tmdbApiKey={tmdbApiKey}
               loading={catalogLoading}
+              apiPage={apiPage}
+              apiHasMore={apiHasMore}
+              apiLoadingMore={apiLoadingMore}
+              onLoadMoreApi={() => fetchApiCatalogPage(apiPage + 1, true)}
               onSelectForEmbed={handleSelectMediaForEmbed}
               onNavigateIngest={() => setActiveTab('ingest')}
               onSignInGoogle={handleSignInGoogle}
@@ -325,6 +385,7 @@ export default function App() {
               user={user}
               tmdbApiKey={tmdbApiKey}
               tmdbConfigured={Boolean(tmdbApiKey || settings.tmdbConfigured)}
+              onTmdbKeyUpdated={(newKey) => setTmdbApiKey(newKey)}
               onGoToCatalog={() => setActiveTab('catalog')}
               onSignInGoogle={handleSignInGoogle}
             />

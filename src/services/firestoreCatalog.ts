@@ -487,89 +487,119 @@ export async function saveIngestedBatchToFirestore(
     let importedCount = 0;
     let skippedCount = 0;
 
-    for (const [mediaKey, group] of grouped.entries()) {
-      const mediaRef = doc(db, 'media_items', mediaKey);
-      const existingMedia = await getDoc(mediaRef);
-      let existingSourcesSnap = existingMedia.exists()
-        ? await getDocs(
-            query(
-              collection(db, 'media_items', mediaKey, 'sources'),
-              where('parentStatus', '==', String(existingMedia.data().status || 'published'))
-            )
-          )
-        : null;
+    const groupList = Array.from(grouped.entries());
+    const CONCURRENCY = 10;
 
-      const existingIds = new Set<string>(existingSourcesSnap ? existingSourcesSnap.docs.map((d) => d.id) : []);
-      const newSources: Array<{ id: string; entry: IngestEntryPayload }> = [];
+    for (let w = 0; w < groupList.length; w += CONCURRENCY) {
+      const wave = groupList.slice(w, w + CONCURRENCY);
+      const waveCounts = await Promise.all(
+        wave.map(async ([mediaKey, group]) => {
+          let localImported = 0;
+          let localSkipped = 0;
 
-      for (const entry of group.entries) {
-        const srcId = makeSourceId(entry.streamUrl, entry.season, entry.episode);
-        if (existingIds.has(srcId)) {
-          skippedCount++;
-        } else {
-          existingIds.add(srcId);
-          newSources.push({ id: srcId, entry });
-        }
-      }
+          const mediaRef = doc(db, 'media_items', mediaKey);
+          const existingMedia = await getDoc(mediaRef);
+          const existingSourcesSnap = existingMedia.exists()
+            ? await getDocs(
+                query(
+                  collection(db, 'media_items', mediaKey, 'sources'),
+                  where('parentStatus', '==', String(existingMedia.data().status || 'published'))
+                )
+              )
+            : null;
 
-      const m = group.meta;
-      const totalSourcesForItem = existingIds.size;
+          const existingIds = new Set<string>(
+            existingSourcesSnap ? existingSourcesSnap.docs.map((d) => d.id) : []
+          );
+          const newSources: Array<{ id: string; entry: IngestEntryPayload }> = [];
 
-      if (!existingMedia.exists()) {
-        await setDoc(mediaRef, {
-          ownerId: uid,
-          tmdbId: Math.max(1, Math.trunc(m.tmdbId)),
-          imdbId: clampString(m.imdbId, 32),
-          type: m.type,
-          title: clampString(m.title, 200) || `TMDB ${m.tmdbId}`,
-          originalTitle: clampString(m.originalTitle, 200),
-          overview: clampString(m.overview, 2000),
-          posterUrl: clampString(m.posterUrl, 500),
-          backdropUrl: clampString(m.backdropUrl || m.posterUrl, 500),
-          releaseYear: m.releaseYear && m.releaseYear >= 1900 && m.releaseYear <= 2100 ? Math.trunc(m.releaseYear) : 0,
-          rating: typeof m.rating === 'number' ? Math.min(10, Math.max(0, Number(m.rating.toFixed(1)))) : 0,
-          genres: (m.genres || []).slice(0, 10).map((g) => clampString(g, 40)).filter(Boolean),
-          runtime: m.runtime && m.runtime >= 0 ? Math.min(2000, Math.trunc(m.runtime)) : 0,
-          status: 'published',
-          sourceOrigin: m.sourceOrigin,
-          sourcesCount: totalSourcesForItem,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } else if (newSources.length > 0) {
-        const prev = existingMedia.data();
-        await updateDoc(mediaRef, {
-          title: clampString(m.title, 200) || String(prev.title || ''),
-          overview: String(prev.overview || '') || clampString(m.overview, 2000),
-          posterUrl: String(prev.posterUrl || '') || clampString(m.posterUrl, 500),
-          backdropUrl: String(prev.backdropUrl || '') || clampString(m.backdropUrl || m.posterUrl, 500),
-          sourcesCount: totalSourcesForItem,
-          updatedAt: serverTimestamp(),
-        });
-      }
+          for (const entry of group.entries) {
+            const srcId = makeSourceId(entry.streamUrl, entry.season, entry.episode);
+            if (existingIds.has(srcId)) {
+              localSkipped++;
+            } else {
+              existingIds.add(srcId);
+              newSources.push({ id: srcId, entry });
+            }
+          }
 
-      if (newSources.length > 0) {
-        const batch = writeBatch(db);
-        for (const { id: srcId, entry } of newSources) {
-          batch.set(doc(db, 'media_items', mediaKey, 'sources', srcId), {
-            mediaKey,
-            ownerId: uid,
-            parentStatus: 'published',
-            season: entry.type === 'tv' ? Math.max(1, Math.trunc(entry.season || 1)) : 0,
-            episode: entry.type === 'tv' ? Math.max(1, Math.trunc(entry.episode || 1)) : 0,
-            episodeTitle: clampString(entry.episodeTitle, 200),
-            streamUrl: clampString(entry.streamUrl, 1000),
-            quality: clampString(entry.quality || '1080p', 20),
-            format: entry.format || 'hls',
-            language: clampString(entry.language || 'PT-BR', 20),
-            isWorking: true,
-            originProvider: clampString(entry.originProvider || jobMeta.sourceName, 100),
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-          importedCount++;
-        }
-        await batch.commit();
+          const m = group.meta;
+          const totalSourcesForItem = existingIds.size;
+
+          if (!existingMedia.exists()) {
+            await setDoc(mediaRef, {
+              ownerId: uid,
+              tmdbId: Math.max(1, Math.trunc(m.tmdbId)),
+              imdbId: clampString(m.imdbId, 32),
+              type: m.type,
+              title: clampString(m.title, 200) || `TMDB ${m.tmdbId}`,
+              originalTitle: clampString(m.originalTitle, 200),
+              overview: clampString(m.overview, 2000),
+              posterUrl: clampString(m.posterUrl, 500),
+              backdropUrl: clampString(m.backdropUrl || m.posterUrl, 500),
+              releaseYear:
+                m.releaseYear && m.releaseYear >= 1900 && m.releaseYear <= 2100
+                  ? Math.trunc(m.releaseYear)
+                  : 0,
+              rating:
+                typeof m.rating === 'number'
+                  ? Math.min(10, Math.max(0, Number(m.rating.toFixed(1))))
+                  : 0,
+              genres: (m.genres || []).slice(0, 10).map((g) => clampString(g, 40)).filter(Boolean),
+              runtime: m.runtime && m.runtime >= 0 ? Math.min(2000, Math.trunc(m.runtime)) : 0,
+              status: 'published',
+              sourceOrigin: m.sourceOrigin,
+              sourcesCount: totalSourcesForItem,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          } else if (newSources.length > 0) {
+            const prev = existingMedia.data();
+            await updateDoc(mediaRef, {
+              title: clampString(m.title, 200) || String(prev.title || ''),
+              overview: String(prev.overview || '') || clampString(m.overview, 2000),
+              posterUrl: String(prev.posterUrl || '') || clampString(m.posterUrl, 500),
+              backdropUrl: String(prev.backdropUrl || '') || clampString(m.backdropUrl || m.posterUrl, 500),
+              sourcesCount: totalSourcesForItem,
+              updatedAt: serverTimestamp(),
+            });
+          }
+
+          if (newSources.length > 0) {
+            const CHUNK_SIZE = 400;
+            for (let i = 0; i < newSources.length; i += CHUNK_SIZE) {
+              const chunk = newSources.slice(i, i + CHUNK_SIZE);
+              const batch = writeBatch(db);
+              for (const { id: srcId, entry } of chunk) {
+                batch.set(doc(db, 'media_items', mediaKey, 'sources', srcId), {
+                  mediaKey,
+                  ownerId: uid,
+                  parentStatus: 'published',
+                  season: entry.type === 'tv' ? Math.max(1, Math.trunc(entry.season || 1)) : 0,
+                  episode: entry.type === 'tv' ? Math.max(1, Math.trunc(entry.episode || 1)) : 0,
+                  episodeTitle: clampString(entry.episodeTitle, 200),
+                  streamUrl: clampString(entry.streamUrl, 1000),
+                  quality: clampString(entry.quality || '1080p', 20),
+                  format: entry.format || 'hls',
+                  language: clampString(entry.language || 'PT-BR', 20),
+                  isWorking: true,
+                  originProvider: clampString(entry.originProvider || jobMeta.sourceName, 100),
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+                localImported++;
+              }
+              await batch.commit();
+            }
+          }
+
+          return { localImported, localSkipped };
+        })
+      );
+
+      for (const c of waveCounts) {
+        importedCount += c.localImported;
+        skippedCount += c.localSkipped;
       }
     }
 

@@ -190,9 +190,10 @@ export function renderEmbedPlayerHtml(media: EmbedPlayerMedia, apiKeyParam: stri
       justify-content: center;
       min-height: 0;
     }
-    video {
+    video, iframe.embed-frame {
       width: 100%;
       height: 100%;
+      border: 0;
       object-fit: contain;
       background: #000000;
     }
@@ -234,6 +235,7 @@ export function renderEmbedPlayerHtml(media: EmbedPlayerMedia, apiKeyParam: stri
     </div>
     <div class="video-stage">
       <video id="cv-video" controls playsinline preload="metadata" poster="${escapeHtml(media.backdropUrl || media.posterUrl)}"></video>
+      <iframe id="cv-iframe" class="embed-frame" style="display:none" allowfullscreen allow="autoplay; fullscreen; picture-in-picture; encrypted-media" referrerpolicy="no-referrer"></iframe>
       <div id="status-banner" class="status-banner"></div>
       <div class="watermark">${escapeHtml(media.watermarkText)}</div>
     </div>
@@ -250,6 +252,7 @@ export function renderEmbedPlayerHtml(media: EmbedPlayerMedia, apiKeyParam: stri
       const accentColor = ${JSON.stringify(safeColor.replace('#', ''))};
 
       const video = document.getElementById('cv-video');
+      const iframeEl = document.getElementById('cv-iframe');
       const serverButtonsEl = document.getElementById('server-buttons');
       const episodeSelect = document.getElementById('episode-select');
       const statusBanner = document.getElementById('status-banner');
@@ -300,6 +303,19 @@ export function renderEmbedPlayerHtml(media: EmbedPlayerMedia, apiKeyParam: stri
           hlsInstance.destroy();
           hlsInstance = null;
         }
+
+        if (src.format === 'embed') {
+          try { video.pause(); } catch (_) {}
+          video.removeAttribute('src');
+          video.style.display = 'none';
+          iframeEl.style.display = 'block';
+          iframeEl.src = src.streamUrl;
+          return;
+        }
+
+        iframeEl.style.display = 'none';
+        iframeEl.src = 'about:blank';
+        video.style.display = 'block';
 
         const isHls = src.format === 'hls' || src.streamUrl.toLowerCase().includes('.m3u8');
         if (isHls && window.Hls && window.Hls.isSupported()) {
