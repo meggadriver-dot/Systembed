@@ -1,0 +1,6 @@
+{
+  "name": "CineVault API — Plataforma Própria de Stream Embed & TMDB",
+  "description": "Sistema completo de API de Stream Embed integrada ao TMDB com extração de listas M3U e APIs externas para banco de dados próprio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
